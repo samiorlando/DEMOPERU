@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Audio Debug - Verificar Conexiones</title>
+    <style>
+        body { background: #0a0b10; color: #e0e0e0; font-family: monospace; padding: 20px; }
+        .box { background: #1a1d28; border: 1px solid #333; padding: 15px; margin: 10px 0; border-radius: 8px; }
+        .ok { color: #00e676; }
+        .error { color: #ff1744; }
+        .warn { color: #ffd600; }
+        h2 { color: #00e676; margin-top: 0; }
+        button { background: #2a2d3a; border: 1px solid #444; color: #e0e0e0; padding: 10px 20px; border-radius: 6px; cursor: pointer; margin: 5px; }
+        button:hover { background: #3a3d4a; }
+        #output { background: #0f1016; padding: 15px; border-radius: 6px; max-height: 400px; overflow-y: auto; margin-top: 10px; }
+        .log { margin: 5px 0; padding: 5px; border-left: 3px solid #444; padding-left: 10px; }
+    </style>
+</head>
+<body>
+    <h1>🔧 Audio System Debug</h1>
+    
+    <div class="box">
+        <h2>✅ Verificaciones Básicas</h2>
+        <div id="output"></div>
+    </div>
+
+    <div class="box">
+        <button onclick="testAudioContext()">1️⃣ Test AudioContext</button>
+        <button onclick="testMicrophone()">2️⃣ Test Micrófono</button>
+        <button onclick="testDevices()">3️⃣ Test Dispositivos</button>
+        <button onclick="testRouting()">4️⃣ Test Routing de Audio</button>
+        <button onclick="clearLog()">🗑️ Limpiar Log</button>
+    </div>
+
+    <script>
+        function log(msg, type = 'info') {
+            const output = document.getElementById('output');
+            const logEl = document.createElement('div');
+            logEl.className = 'log';
+            
+            let icon = '❓';
+            if(type === 'ok') { icon = '✅'; logEl.style.borderColor = '#00e676'; logEl.className += ' ok'; }
+            else if(type === 'error') { icon = '❌'; logEl.style.borderColor = '#ff1744'; logEl.className += ' error'; }
+            else if(type === 'warn') { icon = '⚠️'; logEl.style.borderColor = '#ffd600'; logEl.className += ' warn'; }
+            else { logEl.style.borderColor = '#448aff'; logEl.className += ' info'; }
+            
+            logEl.textContent = `${icon} ${msg}`;
+            output.appendChild(logEl);
+            output.scrollTop = output.scrollHeight;
+            console.log(msg);
+        }
+
+        function clearLog() {
+            document.getElementById('output').innerHTML = '';
+        }
+
+        async function testAudioContext() {
+            log('🔍 Probando AudioContext...');
+            try {
+                const ctx = new (window.AudioContext || window.webkitAudioContext)();
+                log(`✅ AudioContext creado`, 'ok');
+                log(`Sample Rate: ${ctx.sampleRate} Hz`, 'ok');
+                log(`State: ${ctx.state}`, 'ok');
+                
+                if(ctx.state === 'suspended') {
+                    await ctx.resume();
+                    log(`✅ AudioContext reanudado`, 'ok');
+                }
+                
+                // Test basic routing
+                const osc = ctx.createOscillator();
+                const gain = ctx.createGain();
+                gain.gain.value = 0.1;
+                osc.connect(gain);
+                gain.connect(ctx.destination);
+                osc.start();
+                log(`✅ Oscilador conectado a destination`, 'ok');
+                setTimeout(() => osc.stop(), 500);
+                log(`✅ Tono de prueba enviado (deberías oír un beep)`, 'warn');
+                
+                await ctx.close();
+            } catch(e) {
+                log(`❌ Error: ${e.message}`, 'error');
+            }
+        }
+
+        async function testMicrophone() {
+            log('🔍 Probando Micrófono...');
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({audio: true});
+                log(`✅ Acceso a micrófono obtenido`, 'ok');
+                
+                const ctx = new (window.AudioContext || window.webkitAudioContext)();
+                const source = ctx.createMediaStreamSource(stream);
+                const analyser = ctx.createAnalyser();
+                analyser.fftSize = 256;
+                source.connect(analyser);
+                
+                // Test if getting audio data
+                const data = new Uint8Array(analyser.frequencyBinCount);
+                analyser.getByteFrequencyData(data);
+                const avg = data.reduce((a,b)=>a+b)/data.length;
+                
+                log(`✅ Analizador conectado a micrófono`, 'ok');
+                log(`Nivel detectado: ${avg.toFixed(0)} (debe ser > 0 si hay sonido)`, avg > 10 ? 'ok' : 'warn');
+                
+                stream.getTracks().forEach(t => t.stop());
+                await ctx.close();
+            } catch(e) {
+                log(`❌ Error: ${e.message}`, 'error');
+            }
+        }
+
+        async function testDevices() {
+            log('🔍 Enumerando Dispositivos de Audio...');
+            try {
+                const devices = await navigator.mediaDevices.enumerateDevices();
+                const inputs = devices.filter(d => d.kind === 'audioinput');
+                const outputs = devices.filter(d => d.kind === 'audiooutput');
+                
+                log(`✅ Total de dispositivos: ${devices.length}`, 'ok');
+                log(`Entradas de audio: ${inputs.length}`, inputs.length > 0 ? 'ok' : 'error');
+                inputs.forEach((d, i) => log(`  [${i}] ${d.label || 'Sin nombre'} (${d.deviceId.substr(0,10)}...)`));
+                
+                log(`Salidas de audio: ${outputs.length}`, outputs.length > 0 ? 'ok' : 'error');
+                outputs.forEach((d, i) => log(`  [${i}] ${d.label || 'Sin nombre'} (${d.deviceId.substr(0,10)}...)`));
+            } catch(e) {
+                log(`❌ Error: ${e.message}`, 'error');
+            }
+        }
+
+        async function testRouting() {
+            log('🔍 Probando Routing Completo de Audio...');
+            try {
+                // 1. Get microphone
+                const stream = await navigator.mediaDevices.getUserMedia({audio: true});
+                log(`✅ Micrófono obtenido`, 'ok');
+                
+                // 2. Create context
+                const ctx = new (window.AudioContext || window.webkitAudioContext)();
+                if(ctx.state === 'suspended') await ctx.resume();
+                log(`✅ AudioContext creado y reanudado`, 'ok');
+                
+                // 3. Create simple routing chain
+                const source = ctx.createMediaStreamSource(stream);
+                const masterGain = ctx.createGain();
+                masterGain.gain.value = 0.3; // Lower volume for safety
+                
+                const splitter = ctx.createChannelSplitter(2);
+                const merger = ctx.createChannelMerger(2);
+                
+                // Build chain
+                source.connect(masterGain);
+                masterGain.connect(splitter);
+                splitter.connect(merger, 0, 0);
+                splitter.connect(merger, 1, 1);
+                merger.connect(ctx.destination);
+                
+                log(`✅ Cadena de audio conectada correctamente`, 'ok');
+                log(`   source → masterGain → splitter → merger → destination`, 'ok');
+                
+                // 4. Test analyzers
+                const analyser = ctx.createAnalyser();
+                merger.connect(analyser);
+                log(`✅ Analizador conectado`, 'ok');
+                
+                // 5. Monitor signal
+                const data = new Uint8Array(analyser.frequencyBinCount);
+                let count = 0;
+                const monitor = setInterval(() => {
+                    analyser.getByteFrequencyData(data);
+                    const avg = data.reduce((a,b)=>a+b)/data.length;
+                    count++;
+                    if(count <= 3) log(`📊 Nivel de audio: ${avg.toFixed(0)} (Hablá al micrófono)`, avg > 20 ? 'ok' : 'info');
+                }, 500);
+                
+                setTimeout(() => {
+                    clearInterval(monitor);
+                    stream.getTracks().forEach(t => t.stop());
+                    ctx.close();
+                    log(`✅ Test completado`, 'ok');
+                }, 2500);
+                
+            } catch(e) {
+                log(`❌ Error: ${e.message}`, 'error');
+            }
+        }
+
+        // Auto-run on load
+        window.addEventListener('load', () => {
+            log('🚀 Audio Debug System Iniciado', 'ok');
+            log('Presiona los botones para ejecutar tests', 'warn');
+        });
+    </script>
+</body>
+</html>

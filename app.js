@@ -1,12 +1,13 @@
 document.addEventListener('DOMContentLoaded', () => {
     const MODULES = [
         { id: 'input', title: 'Input', meters: ['L','R'], type: 'meter' },
-        { id: 'agc', title: 'AGC', sub: 'Gate / Comp', meters: ['B','M','L','R'], type: 'comp', params: { thr: -20, ratio: 4, atk: 0.02, rel: 0.15, mkup: 6 } },
+        { id: 'master', title: 'Master Volume', meters: ['L','R'], type: 'meter', params: { vol: 0.8 } },
+        { id: 'agc', title: 'AGC', sub: 'Gate / Comp', meters: ['B','M','L','R'], type: 'comp', params: { thr: -15, ratio: 3, atk: 0.05, rel: 0.25, mkup: 4 } },
         { id: 'hf', title: 'HF Enhancer', meters: ['L','R'], type: 'meter' },
         { id: 'stereo', title: 'Stereo Enhancer', meters: ['L','R'], type: 'meter' },
         { id: 'gr', title: 'Gain Reduction', sub: 'Multi Gate', meters: ['1','2','3','4','5'], type: 'meter', narrow: true },
         { id: 'loudgr', title: 'Loudness GR', meters: ['L','R'], type: 'meter' },
-        { id: 'limiter', title: 'Limiter', meters: ['L','R'], type: 'comp', params: { thr: -6, ratio: 20, atk: 0.001, rel: 0.08, mkup: 2 } },
+        { id: 'limiter', title: 'Limiter', meters: ['L','R'], type: 'comp', params: { thr: -3, ratio: 12, atk: 0.002, rel: 0.1, mkup: 1 } },
         { id: 'basslim', title: 'Bass Limiter', meters: ['L','R'], type: 'comp', params: { thr: -12, ratio: 10, atk: 0.01, rel: 0.12, mkup: 4 } },
         { id: 'loudlevel', title: 'Loudness Level', meters: ['dB','LU'], type: 'lufs', tall: true },
         { id: 'output', title: 'Output', meters: ['L','R'], type: 'meter' }
@@ -233,46 +234,85 @@ document.addEventListener('DOMContentLoaded', () => {
         else if(streamOrBuffer instanceof AudioBuffer) { const src=audioCtx.createBufferSource(); src.buffer=streamOrBuffer; src.loop=true; source=src; src.start(0); }
         else return;
 
-        // Intermediate gain to handle mono-to-stereo upmixing automatically
-        const inputGain = audioCtx.createGain();
-        source.connect(inputGain);
+        // Main volume control (CRITICAL FOR HEARING AUDIO)
+        const masterVolume = audioCtx.createGain();
+        masterVolume.gain.value = 0.8; // Audible level
+        source.connect(masterVolume);
 
         const splitter=audioCtx.createChannelSplitter(2), merger=audioCtx.createChannelMerger(2);
-        inputGain.connect(splitter);
+        masterVolume.connect(splitter);
         
         // Anchors for L/R chains
         const anchorL = audioCtx.createGain(), anchorR = audioCtx.createGain();
+        anchorL.gain.value = 1.0;
+        anchorR.gain.value = 1.0;
         splitter.connect(anchorL, 0);
         splitter.connect(anchorR, 1);
         
         let chainL=anchorL, chainR=anchorR;
         channelStates.clear();
+        stages.output={gainNodes:[], analyserIn:[], analyserOut:[], comp:null, makeupGain:null};
+        
         MODULES.forEach(mod => {
-            stages[mod.id]={gainNodes:[], analyserIn:[], analyserOut:[], comp:null, makeupGain:null};
-            mod.meters.forEach((_,i)=>{
-                const isR=(mod.meters.length===4&&(i===1||i===3))||(mod.meters.length===2&&i===1);
-                const prev=isR?chainR:chainL, key=`${mod.id}_${i}`;
-                const aIn=audioCtx.createAnalyser(); aIn.fftSize=256; aIn.smoothingTimeConstant=0.35;
-                const aOut=audioCtx.createAnalyser(); aOut.fftSize=256; aOut.smoothingTimeConstant=0.35;
-                const gn=audioCtx.createGain(); gn.gain.value=1;
-                const muteNode=audioCtx.createGain(); muteNode.gain.value=1;
-                stages[mod.id].analyserIn.push(aIn); stages[mod.id].analyserOut.push(aOut); stages[mod.id].gainNodes.push(gn);
-                channelStates.set(key,{muteNode, gainNode:gn, solo:false, mute:false});
-                if(mod.type==='comp' && mod.params) {
-                    const comp=audioCtx.createDynamicsCompressor(); comp.threshold.value=mod.params.thr; comp.knee.value=6; comp.ratio.value=mod.params.ratio; comp.attack.value=mod.params.atk; comp.release.value=mod.params.rel;
-                    const mkup=audioCtx.createGain(); mkup.gain.value=10**(mod.params.mkup/20); stages[mod.id].comp=comp; stages[mod.id].makeupGain=mkup;
-                    prev.connect(aIn); aIn.connect(comp); comp.connect(aOut); aOut.connect(mkup); mkup.connect(muteNode);
-                } else { prev.connect(aIn); aIn.connect(aOut); aOut.connect(muteNode); }
-                muteNode.connect(gn); if(isR) chainR=gn; else chainL=gn;
-            });
+            if(mod.id === 'input' || mod.id === 'output') {
+                // Input and Output only have analyzers, no processing
+                stages[mod.id]={gainNodes:[], analyserIn:[], analyserOut:[], comp:null, makeupGain:null};
+                mod.meters.forEach((_,i)=>{
+                    const isR=(mod.meters.length===2&&i===1);
+                    const prev=isR?chainR:chainL, key=`${mod.id}_${i}`;
+                    const aIn=audioCtx.createAnalyser(); aIn.fftSize=256; aIn.smoothingTimeConstant=0.35;
+                    const aOut=audioCtx.createAnalyser(); aOut.fftSize=256; aOut.smoothingTimeConstant=0.35;
+                    const gn=audioCtx.createGain(); gn.gain.value=1;
+                    const muteNode=audioCtx.createGain(); muteNode.gain.value=1;
+                    stages[mod.id].analyserIn.push(aIn); stages[mod.id].analyserOut.push(aOut); stages[mod.id].gainNodes.push(gn);
+                    channelStates.set(key,{muteNode, gainNode:gn, solo:false, mute:false});
+                    prev.connect(aIn); aIn.connect(aOut); aOut.connect(muteNode);
+                    muteNode.connect(gn); if(isR) chainR=gn; else chainL=gn;
+                });
+            } else {
+                // Processing modules
+                stages[mod.id]={gainNodes:[], analyserIn:[], analyserOut:[], comp:null, makeupGain:null};
+                mod.meters.forEach((_,i)=>{
+                    const isR=(mod.meters.length===4&&(i===1||i===3))||(mod.meters.length===2&&i===1);
+                    const prev=isR?chainR:chainL, key=`${mod.id}_${i}`;
+                    const aIn=audioCtx.createAnalyser(); aIn.fftSize=256; aIn.smoothingTimeConstant=0.35;
+                    const aOut=audioCtx.createAnalyser(); aOut.fftSize=256; aOut.smoothingTimeConstant=0.35;
+                    const gn=audioCtx.createGain(); gn.gain.value=1;
+                    const muteNode=audioCtx.createGain(); muteNode.gain.value=1;
+                    stages[mod.id].analyserIn.push(aIn); stages[mod.id].analyserOut.push(aOut); stages[mod.id].gainNodes.push(gn);
+                    channelStates.set(key,{muteNode, gainNode:gn, solo:false, mute:false});
+                    
+                    if(mod.type==='comp' && mod.params) {
+                        const comp=audioCtx.createDynamicsCompressor(); 
+                        comp.threshold.value=mod.params.thr; 
+                        comp.knee.value=6; 
+                        comp.ratio.value=mod.params.ratio; 
+                        comp.attack.value=mod.params.atk; 
+                        comp.release.value=mod.params.rel;
+                        const mkup=audioCtx.createGain(); 
+                        mkup.gain.value=10**(mod.params.mkup/20); 
+                        stages[mod.id].comp=comp; 
+                        stages[mod.id].makeupGain=mkup;
+                        prev.connect(aIn); aIn.connect(comp); comp.connect(aOut); aOut.connect(mkup); mkup.connect(muteNode);
+                    } else { 
+                        prev.connect(aIn); aIn.connect(aOut); aOut.connect(muteNode); 
+                    }
+                    muteNode.connect(gn); if(isR) chainR=gn; else chainL=gn;
+                });
+            }
         });
+        
+        // CRITICAL: Connect both channels to output analyzers THEN to destination
         chainL.connect(stages.output.analyserOut[0]); 
         chainR.connect(stages.output.analyserOut[1]);
         
         stages.output.analyserOut[0].connect(merger, 0, 0); 
         stages.output.analyserOut[1].connect(merger, 0, 1); 
         
+        // CRITICAL: This MUST be connected to destination for audio to play
         merger.connect(audioCtx.destination);
+        
+        console.log('✅ Audio engine initialized - Output connected to destination');
         updateRouting();
         renderId = requestAnimationFrame(renderLoop);
     }
